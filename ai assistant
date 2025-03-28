@@ -1,0 +1,668 @@
+import speech_recognition as sr
+import os
+import webbrowser
+import pyttsx3
+import datetime
+import pyjokes
+import subprocess
+import requests
+import random
+import time
+import threading
+from typing import Optional
+import re
+from deep_translator import GoogleTranslator
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, ttk
+import smtplib
+import json
+import psutil
+
+class PersonalAssistant:
+    def __init__(self, name: str = "Swasti", owner: str = "Motalib"):
+        self.name = name
+        self.owner = owner
+
+        self.engine = pyttsx3.init()
+        self.setup_voice()
+        self.recognizer = sr.Recognizer()
+        self.command_history = []
+        self.greetings = [
+            f"Hello! How can I assist you today?",
+            f"Hi! I'm {self.name}, ready to help!",
+            f"Greetings! What can I do for you?"
+        ]
+        self.app_paths = {
+            'whatsapp': 'C:\\Users\\YourUsername\\AppData\\Local\\WhatsApp\\WhatsApp.exe',
+            'vscode': 'C:\\Users\\YourUsername\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe'
+        }
+        self.reminders = []
+        self.alarms = []
+
+        self.wake_word = "hey ai"
+        self.wake_word_active = False
+        self.listening_for_wake_word = True
+
+        self.root = None
+        self.chat_display = None
+        self.command_entry = None
+        self.status_var = None
+        self.status_label = None
+
+        self.translator = GoogleTranslator(source='auto', target='es')
+
+        self.load_settings()
+
+    def open_application(self, app_name: str, path: str):
+        try:
+            subprocess.Popen(path)
+            self.say(f"Opening {app_name}")
+        except Exception as e:
+            self.say(f"Sorry, I couldn't open {app_name}. Error: {str(e)}")
+
+    def setup_voice(self):
+        self.engine.setProperty('rate', 150)
+        self.engine.setProperty('volume', 0.9)
+        voices = self.engine.getProperty('voices')
+        selected_voice = None
+
+        for voice in voices:
+            if "zira" in voice.name.lower():
+                selected_voice = voice
+                break
+
+        if selected_voice:
+            self.engine.setProperty('voice', selected_voice.id)
+            print(f"Using voice: {selected_voice.name}")
+        else:
+            print("No Microsoft Zira voice found. Using default voice.")
+
+    def say(self, text: str):
+        print(f"{self.name}: {text}")
+        if self.chat_display:
+            self.update_chat_display(f"{self.name}: {text}")
+        self.engine.say(text)
+        self.engine.runAndWait()
+
+    def listen_for_wake_word(self):
+        self.update_status("Listening for wake word...")
+
+        try:
+            with sr.Microphone() as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                self.recognizer.pause_threshold = 1
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+
+                try:
+                    phrase = self.recognizer.recognize_google(audio, language='en-in').lower()
+                    if self.wake_word in phrase:
+                        self.wake_word_active = True
+                        self.update_status("Wake word detected! Listening for command...")
+                        self.say(f"I'm listening, {self.owner}. How can I help?")
+                        return True
+                except sr.UnknownValueError:
+                    pass
+                except Exception as e:
+                    print(f"Error listening for wake word: {str(e)}")
+        except Exception as e:
+            print(f"Error in wake word detection: {str(e)}")
+
+        return False
+
+    def take_command(self) -> str:
+        try:
+            with sr.Microphone() as source:
+                self.update_status("Listening...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                self.recognizer.pause_threshold = 1
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+
+                self.update_status("Recognizing...")
+                query = self.recognizer.recognize_google(audio, language='en-in')
+                query = query.lower()
+
+                print(f"User  said: {query}")
+                if self.chat_display:
+                    self.update_chat_display(f"You: {query}")
+
+                self.command_history.append(query)
+                self.wake_word_active = False
+                self.update_status("Ready")
+                return query
+
+        except sr.WaitTimeoutError:
+            self.say("I didn't hear anything. Could you please speak again?")
+        except sr.UnknownValueError:
+            self.say("I couldn't understand what you said. Could you please repeat?")
+        except sr.RequestError:
+            self.say("Sorry, there seems to be an issue with the speech recognition service.")
+        except Exception as e:
+            self.say(f"An error occurred: {str(e)}")
+
+        self.wake_word_active = False
+        self.update_status("Ready")
+        return "None"
+
+    def solve_math_expression(self, expression: str) -> Optional[float]:
+        try:
+            cleaned_expr = re.sub(r'[^0-9+\-*/().%\s]', '', expression)
+            result = eval(cleaned_expr)
+            return result
+        except Exception as e:
+            self.say(f"Sorry, I couldn't calculate that. Please check the expression.")
+            return None
+
+    def handle_math_query(self, query: str) -> bool:
+        math_triggers = {
+            "add": "+",
+            "plus": "+",
+            "sum": "+",
+            "minus": "-",
+            "subtract": "-",
+            "multiply": "*",
+            "times": "*",
+            "divided by": "/",
+            "divide": "/",
+            "calculate": "",
+            "compute": "",
+            "solve": "",
+        }
+
+        is_math_query = any(trigger in query for trigger in math_triggers)
+        has_numbers = bool(re.search(r'\d', query))
+
+        if is_math_query or has_numbers:
+            expression = query
+            for trigger, operator in math_triggers.items():
+                expression = expression.replace(trigger, operator)
+
+            math_expr = re.findall(r'[\d+\-*/().%\s]+', expression)
+            if math_expr:
+                result = self.solve_math_expression(math_expr[0])
+                if result is not None:
+                    self.say(f"The result is {result}")
+                return True
+        return False
+
+    def take_text_input(self) -> str:
+        try:
+            user_input = input(f"{self.owner}, please type your command: ").lower()
+            print(f"You typed: {user_input}")
+            self.command_history.append(user_input)
+            return user_input
+        except Exception as e:
+            print(f"Error taking text input: {str(e)}")
+            return "None"
+
+    def get_weather(self, city: str) -> Optional[str]:
+        api_key = "YOUR_OPENWEATHERMAP_API_KEY"
+        base_url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+        try:
+            response = requests.get(base_url)
+            data = response.json()
+            if data["cod"] != "404":
+                main = data["main"]
+                weather = data["weather"][0]
+                temperature = main["temp"]
+                humidity = main["humidity"]
+                description = weather["description"]
+                return f"The temperature in {city} is {temperature}°C with {description}. Humidity is {humidity}%."
+            else:
+                return f"Sorry, I couldn't find the weather for {city}."
+        except Exception as e:
+            return f"An error occurred while fetching the weather: {str(e)}"
+
+    def set_reminder(self, reminder_text: str, delay: int):
+        def reminder():
+            time.sleep(delay)
+            self.say(f"Reminder: {reminder_text}")
+            if self.root:
+                self.root.after(0, lambda: messagebox.showinfo("Reminder", reminder_text))
+
+        reminder_thread = threading.Thread(target=reminder, daemon=True)
+        reminder_thread.start()
+        self.reminders.append(reminder_thread)
+        self.say(f"Reminder set for {delay} seconds from now.")
+
+    def set_alarm(self, alarm_time: str):
+        def alarm():
+            while True:
+                current_time = datetime.datetime.now().strftime("%H:%M")
+                if current_time == alarm_time:
+                    self.say(f"Alarm! It's {alarm_time}.")
+                    if self.root:
+                        self.root.after(0, lambda: messagebox.showinfo("Alarm", f"It's {alarm_time}!"))
+                    break
+                time.sleep(30)
+
+        alarm_thread = threading.Thread(target=alarm, daemon=True)
+        alarm_thread.start()
+        self.alarms.append(alarm_thread)
+        self.say(f"Alarm set for {alarm_time}.")
+
+    def search_google(self, query: str) -> Optional[str]:
+        try:
+            search_url = f"https://www.google.com/search?q={query}"
+            webbrowser.open(search_url)
+            return f"Here are the Google search results for {query}."
+        except Exception as e:
+            return f"An error occurred while searching Google: {str(e)}"
+
+    def handle_unknown_query(self, query: str):
+        self.say("Let me think about that...")
+        google_result = self.search_google(query)
+        if google_result:
+            self.say(google_result)
+        else:
+            self.say("Sorry, I couldn't find an answer to your question.")
+
+    def translate_text(self, text: str, target_language: str) -> Optional[str]:
+        try:
+            translation = self.translator.translate(text, target=target_language)
+            return translation
+        except Exception as e:
+            self.say(f"An error occurred while translating: {str(e)}")
+            return None
+
+    def send_email(self, to: str, subject: str, body: str):
+        try:
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login("YOUR_EMAIL@gmail.com", "YOUR_PASSWORD")
+                message = f"Subject: {subject}\n\n{body}"
+                server.sendmail("YOUR_EMAIL@gmail.com", to, message)
+            self.say("Email sent successfully.")
+        except Exception as e:
+            self.say(f"An error occurred while sending email: {str(e)}")
+
+    def load_settings(self):
+        try:
+            with open("settings.json", "r") as file:
+                self.settings = json.load(file)
+
+                if "wake_word" in self.settings:
+                    self.wake_word = self.settings["wake_word"]
+
+        except FileNotFoundError:
+            self.settings = {
+                "wake_word": "hey ai",
+                "voice_rate": 150,
+                "voice_volume": 0.9,
+                "preferred_voice": "zira"
+            }
+            self.save_settings()
+
+    def save_settings(self):
+        with open("settings.json", "w") as file:
+            json.dump(self.settings, file)
+
+    def handle_command(self, query: str) -> bool:
+        if self.handle_math_query(query):
+            return True
+
+        command_handlers = {
+            "open youtube": lambda: webbrowser.open("https://youtube.com"),
+            "open google": lambda: webbrowser.open("https://www.google.com"),
+            "search": self.handle_google_search,  # New command for searching
+            "open claude": lambda: webbrowser.open("https://claude.ai/new"),
+            "open chatgpt": lambda: webbrowser.open("https://chat.openai.com"),
+            "open copilot": lambda: webbrowser.open("https://copilot.microsoft.com"),
+            "open whatsapp": lambda: self.open_application("WhatsApp", self.app_paths['whatsapp']),
+            "open vs code": lambda: self.open_application("VS Code", self.app_paths['vscode']),
+            "open microsoft store": lambda: subprocess.Popen(
+                ['C:\\Windows\\System32\\cmd.exe', '/c', 'start ms-windows-store:']),
+            "open file manager": lambda: subprocess.Popen(['explorer']),
+            "what time is it": lambda: self.say(datetime.datetime.now().strftime("%I:%M %p")),
+            "current time": lambda: self.say(datetime.datetime.now().strftime("%I:%M %p")),
+            "what's the date": lambda: self.say(datetime.datetime.now().strftime("%B %d, %Y")),
+            "current date": lambda: self.say(datetime.datetime.now().strftime("%B %d, %Y")),
+            "weather": self.handle_weather,
+            "set reminder": self.handle_reminder,
+            "set alarm": self.handle_alarm,
+            "tell me a joke": lambda: self.say(pyjokes.get_joke()),
+            "good morning": lambda: self.say(f"Good morning, {self.owner}! I hope you have a wonderful day!"),
+            "good evening": lambda: self.say(f"Good evening, {self.owner}! How was your day?"),
+            "good night": lambda: self.say(f"Good night, {self.owner}! Sleep well and sweet dreams!"),
+            "goodbye": lambda: False,
+            "quit": lambda: False,
+            "exit": lambda: False,
+            "hello": lambda: self.say(random.choice(self.greetings)),
+            " hi": lambda: self.say(random.choice(self.greetings)),
+            "who are you": lambda: self.say(f"I am {self.name}, {self.owner}'s personal AI assistant."),
+            "thank you": lambda: self.say("You're welcome! Is there anything else I can help you with?"),
+            "thanks": lambda: self.say("You're welcome! Is there anything else I can help you with?"),
+            "translate": self.handle_translation,
+            "send email": self.handle_email,
+            "change wake word": self.change_wake_word,
+            "system status": self.show_system_status
+        }
+
+        for pattern, handler in command_handlers.items():
+            if pattern in query:
+                if pattern in ["goodbye", "quit", "exit"]:
+                    self.say(f"Goodbye {self.owner}! Have a great day!")
+                    return False
+                try:
+                    if pattern in ["weather", "set reminder", "set alarm", "translate", "send email",
+                                   "change wake word", "system status"]:
+                        handler()
+                    else:
+                        handler()
+                    return True
+                except Exception as e:
+                    self.say(f"Sorry, I encountered an error: {str(e)}")
+                break
+
+        if query != "None":
+            self.handle_unknown_query(query)
+        return True
+
+    def handle_google_search(self):
+        if self.root:
+            search_query = self.prompt_dialog("Google Search", "What do you want to search for?")
+        else:
+            search_query = input("What do you want to search for? ").strip()
+
+        if search_query:
+            search_url = f"https://www.google.com/search?q={search_query}"
+            webbrowser.open(search_url)
+            self.say(f"Here are the Google search results for {search_query}.")
+        else:
+            self.say("Please specify a search query.")
+
+    def handle_weather(self):
+        if self.root:
+            city = self.prompt_dialog("Weather Information", "Please specify a city:")
+        else:
+            city = input("Please specify a city for the weather information: ").strip()
+
+        if city:
+            weather_info = self.get_weather(city)
+            self.say(weather_info)
+        else:
+            self.say("Please specify a city for the weather information.")
+
+    def handle_reminder(self):
+        if self.root:
+            reminder_text = self.prompt_dialog("Set Reminder", "What do you want to be reminded about?")
+            if reminder_text:
+                delay_str = self.prompt_dialog("Set Reminder", "In how many seconds?")
+                try:
+                    delay = int(delay_str) if delay_str else 60
+                    self.set_reminder(reminder_text, delay)
+                except ValueError:
+                    self.say("Please enter a valid number of seconds.")
+        else:
+            reminder_text = input("Please specify the reminder text: ").strip()
+            if reminder_text:
+                try:
+                    delay = int(input("In how many seconds? ").strip() or "60")
+                    self.set_reminder(reminder_text, delay)
+                except ValueError:
+                    self.say("Using default delay of 60 seconds.")
+                    self.set_reminder(reminder_text, 60)
+            else:
+                self.say("Please specify the reminder text.")
+
+    def handle_alarm(self):
+        if self.root:
+            alarm_time = self.prompt_dialog("Set Alarm", "Please specify the alarm time (HH:MM):")
+        else:
+            alarm_time = input("Please specify the alarm time (HH:MM): ").strip()
+
+        if alarm_time:
+            self.set_alarm(alarm_time)
+        else:
+            self.say("Please specify the alarm time.")
+
+    def handle_translation(self):
+        if self.root:
+            text_to_translate = self.prompt_dialog("Translation", "Please specify the text to translate:")
+            target_language = self.prompt_dialog("Translation",
+                                                 "Please specify the target language (e.g., 'es' for Spanish):")
+        else:
+            text_to_translate = input("Please specify the text to translate: ").strip()
+            target_language = input("Please specify the target language (e.g., 'es' for Spanish): ").strip()
+
+        if text_to_translate and target_language:
+            translated_text = self.translate_text(text_to_translate, target_language)
+            if translated_text:
+                self.say(f"Translation: {translated_text}")
+        else:
+            self.say("Please provide both text to translate and target language.")
+
+    def handle_email(self):
+        if self.root:
+            to = self.prompt_dialog("Send Email", "Recipient email address:")
+            subject = self.prompt_dialog("Send Email", "Email subject:")
+            body = self.prompt_dialog("Send Email", "Email body:", multiline=True)
+        else:
+            to = input("Recipient email address: ").strip()
+            subject = input("Email subject: ").strip()
+            body = input("Email body: ").strip()
+
+        if to and subject and body:
+            self.send_email(to, subject, body)
+        else:
+            self.say("Please provide recipient, subject, and body to send an email.")
+
+    def change_wake_word(self):
+        if self.root:
+            new_wake_word = self.prompt_dialog("Change Wake Word", "Please specify the new wake word:")
+        else:
+            new_wake_word = input("Please specify the new wake word: ").strip().lower()
+
+        if new_wake_word:
+            self.wake_word = new_wake_word
+            self.settings["wake_word"] = new_wake_word
+            self.save_settings()
+            self.say(f"Wake word changed to: {new_wake_word}")
+        else:
+            self.say("Please specify a new wake word.")
+
+    def show_system_status(self):
+        cpu_usage = psutil.cpu_percent()
+        memory = psutil.virtual_memory()
+        memory_usage = memory.percent
+
+        status_info = (
+            f"CPU Usage: {cpu_usage}%\n"
+            f"Memory Usage: {memory_usage}%\n"
+            f"Current Wake Word: '{self.wake_word}'\n"
+            f"Total Commands Processed: {len(self.command_history)}"
+        )
+
+        self.say(f"System Status Information:\nCPU Usage: {cpu_usage}%\nMemory Usage: {memory_usage}%")
+
+        if self.root:
+            messagebox.showinfo("System Status", status_info)
+
+    def prompt_dialog(self, title: str, message: str, multiline: bool = False):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("400x200")
+        dialog.grab_set()
+
+        tk.Label(dialog, text=message, pady=10).pack()
+
+        if multiline:
+            input_field = scrolledtext.ScrolledText(dialog, width=40, height=5)
+        else:
+            input_field = tk.Entry(dialog, width=40)
+        input_field.pack(pady=10)
+        input_field.focus_set()
+
+        result = None
+
+        def on_ok():
+            nonlocal result
+            if multiline:
+                result = input_field.get("1.0", tk.END).strip()
+            else:
+                result = input_field.get().strip()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT)
+
+        if not multiline:
+            input_field.bind("<Return>", lambda event: on_ok())
+
+        dialog.wait_window()
+        return result
+
+    def create_gui(self):
+        self.root = tk.Tk()
+        self.root.title(f"{self.name} - Personal Assistant")
+        self.root.geometry("600x500")
+
+        title_frame = tk.Frame(self.root, pady=5)
+        title_frame.pack(fill=tk.X)
+
+        title_label = tk.Label(title_frame, text=f"{self.name} - Your Personal Assistant", font=("Arial", 16, "bold"))
+        title_label.pack()
+
+        chat_frame = tk.Frame(self.root)
+        chat_frame.pack(expand=True, fill=tk.BOTH, padx=10, pady=5)
+
+        self.chat_display = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Arial", 10))
+        self.chat_display.pack(expand=True, fill=tk.BOTH)
+
+        input_frame = tk.Frame(self.root, pady=5)
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.command_entry = tk.Entry(input_frame, font=("Arial", 10))
+        self.command_entry.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+        self.command_entry.bind("<Return>", lambda event: self.process_gui_command())
+
+        send_button = tk.Button(input_frame, text="Send", command=self.process_gui_command)
+        send_button.pack(side=tk.LEFT)
+
+        mic_button = tk.Button(input_frame, text="🎤", command=self.activate_listening)
+        mic_button.pack(side=tk.LEFT, padx=5)
+
+        status_frame = tk.Frame(self.root)
+        status_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        self.status_label = tk.Label(status_frame, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_label.pack(fill=tk.X)
+
+        menu_bar = tk.Menu(self.root)
+
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Change Wake Word", command=self.change_wake_word)
+        file_menu.add_command(label="System Status", command=self.show_system_status)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.exit_program)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        actions_menu = tk.Menu(menu_bar, tearoff=0)
+        actions_menu.add_command(label="Set Reminder", command=self.handle_reminder)
+        actions_menu.add_command(label="Set Alarm", command=self.handle_alarm)
+        actions_menu.add_command(label="Weather", command=self.handle_weather)
+        actions_menu.add_command(label="Translate Text", command=self.handle_translation)
+        actions_menu.add_command(label="Send Email", command=self.handle_email)
+        menu_bar.add_cascade(label="Actions", menu=actions_menu)
+
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About",
+                                                                                 f"{self.name} - Personal Assistant v1.0\n\nDeveloped for {self.owner}"))
+        help_menu.add_command(label="Commands List", command=self.show_commands_list)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+
+        self.root.config(menu=menu_bar)
+
+        self.update_chat_display(
+            f"{self.name}: Hello! I am {self.name}, {self.owner}'s personal assistant! How can I help you today?")
+
+        self.start_wake_word_listener()
+
+        return self.root
+
+    def update_chat_display(self, message: str):
+        self.chat_display.config(state=tk.NORMAL)
+        self.chat_display.insert(tk.END, message + "\n")
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state=tk.DISABLED)
+
+    def update_status(self, status: str):
+        if self.status_var:
+            self.status_var.set(status)
+            if self.root:
+                self.root.update_idletasks()
+
+    def process_gui_command(self):
+        command = self.command_entry.get().strip()
+        if command:
+            self.update_chat_display(f"You: {command}")
+            self.command_entry.delete(0, tk.END)
+
+            if not self.handle_command(command.lower()):
+                self.exit_program()
+
+    def activate_listening(self):
+        self.update_status("Listening...")
+
+        threading.Thread(target=self.listen_and_process_command, daemon=True).start()
+
+    def listen_and_process_command(self):
+        query = self.take_command()
+        if query != "None":
+            if not self.handle_command(query):
+                self.exit_program()
+
+    def start_wake_word_listener(self):
+        def wake_word_loop():
+            while self.listening_for_wake_word:
+                if self.listen_for_wake_word():
+                    self.listen_and_process_command()
+                time.sleep(0.1)
+
+        threading.Thread(target=wake_word_loop, daemon=True).start()
+
+    def show_commands_list(self):
+        commands = [
+            "Open YouTube/Google/Claude/ChatGPT/Copilot/WhatsApp/VS Code",
+            "What time is it? / Current time",
+            "What's the date? / Current date",
+            "Weather in [city]",
+            "Set reminder",
+            "Set alarm",
+            "Tell me a joke",
+            "Good morning/evening/night",
+            "Who are you?",
+            "Translate [text] to [language]",
+            "Send email",
+            "Change wake word",
+            "System status",
+            "Calculate [math expression]",
+            "Exit / Quit / Goodbye"
+        ]
+
+        commands_window = tk.Toplevel(self.root)
+        commands_window.title("Available Commands")
+        commands_window.geometry("400x400")
+
+        tk.Label(commands_window, text="Available Commands", font=("Arial", 14, "bold")).pack(pady=10)
+        commands_list = tk.Text(commands_window, wrap=tk.WORD, height=15)
+        commands_list.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        commands_list.insert(tk.END, "\n".join(commands))
+        commands_list.config(state=tk.DISABLED)
+
+    def exit_program(self):
+        self.say("Goodbye! Have a great day!")
+        if self.root:
+            self.root.quit()
+
+if __name__ == "__main__":
+    assistant = PersonalAssistant()
+    gui = assistant.create_gui()
+    gui.mainloop()
